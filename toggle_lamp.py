@@ -6,7 +6,9 @@ First run: opens a visible browser so you can log in with Google.
 After that: runs headlessly using the saved session.
 
 Usage:
-    python3 toggle_lamp.py              # auto-detect mode
+    python3 toggle_lamp.py              # toggle (auto-detect browser mode)
+    python3 toggle_lamp.py --on         # ensure lamp is ON (no-op if already on)
+    python3 toggle_lamp.py --off        # ensure lamp is OFF (no-op if already off)
     python3 toggle_lamp.py --login      # force headed login
     python3 toggle_lamp.py --headless   # force headless (needs saved session)
 """
@@ -16,6 +18,7 @@ import pickle
 import sys
 import time
 from pathlib import Path
+from typing import Optional
 
 import undetected_chromedriver as uc
 from selenium.webdriver.common.action_chains import ActionChains
@@ -69,7 +72,18 @@ def dismiss_modal(driver):
         pass  # no modal, that's fine
 
 
-def click_lamp(driver):
+def lamp_is_on(btn) -> bool:
+    """Return True if the lamp is currently ON based on the button title."""
+    title = (btn.get_attribute("title") or "").lower()
+    # Google Home sets title to "Turn off <name>" when the device is ON.
+    return "turn off" in title
+
+
+def click_lamp(driver, desired_state: Optional[str] = None):
+    """Click the lamp button.
+
+    desired_state: 'on', 'off', or None (always toggle).
+    """
     try:
         print(f"[*] Current URL: {driver.current_url}")
 
@@ -78,7 +92,6 @@ def click_lamp(driver):
         driver.save_screenshot(str(Path(__file__).parent / "before_click.png"))
         print("[*] Screenshot saved → before_click.png")
 
-        # List every on-off-tile to debug
         all_btns = driver.find_elements(By.CSS_SELECTOR, "button.on-off-tile")
         print(f"[*] Found {len(all_btns)} device tile(s):")
         for i, b in enumerate(all_btns):
@@ -91,10 +104,20 @@ def click_lamp(driver):
         )
         btn = label.find_element(By.XPATH, "./ancestor::button")
         title = btn.get_attribute("title") or "unknown state"
-        print(f"[+] Clicking Lamp — action will be: '{title}'")
+        currently_on = lamp_is_on(btn)
+        print(f"[*] Lamp is currently {'ON' if currently_on else 'OFF'} (title: '{title}')")
+
+        if desired_state == "on" and currently_on:
+            print("[+] Lamp is already ON — nothing to do.")
+            return
+        if desired_state == "off" and not currently_on:
+            print("[+] Lamp is already OFF — nothing to do.")
+            return
+
+        action = "ON" if not currently_on else "OFF"
+        print(f"[+] Switching lamp {action}...")
         driver.execute_script("arguments[0].scrollIntoView({block:'center'});", btn)
         time.sleep(0.5)
-        # Dispatch the full pointer event sequence Angular Material expects
         driver.execute_script("""
             var el = arguments[0];
             ['pointerdown','mousedown','pointerup','mouseup','click'].forEach(function(type) {
@@ -120,7 +143,7 @@ def make_driver(headless: bool):
     return uc.Chrome(options=options, version_main=147)
 
 
-def run(headless: bool):
+def run(headless: bool, desired_state: Optional[str] = None):
     driver = make_driver(headless)
 
     try:
@@ -130,7 +153,7 @@ def run(headless: bool):
             driver.get(GOOGLE_HOME_URL)
             if is_logged_in(driver):
                 print("[+] Session valid.")
-                click_lamp(driver)
+                click_lamp(driver, desired_state)
                 return
             else:
                 print("[!] Saved session expired, need to log in again.")
@@ -156,17 +179,20 @@ def run(headless: bool):
 
         print("[+] Logged in!")
         save_cookies(driver)
-        click_lamp(driver)
+        click_lamp(driver, desired_state)
 
     finally:
         driver.quit()
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Toggle the Lamp on Google Home.")
-    group = parser.add_mutually_exclusive_group()
-    group.add_argument("--login", action="store_true", help="Force headed browser (re-authenticate)")
-    group.add_argument("--headless", action="store_true", help="Force headless mode")
+    parser = argparse.ArgumentParser(description="Control the Lamp on Google Home.")
+    browser_group = parser.add_mutually_exclusive_group()
+    browser_group.add_argument("--login", action="store_true", help="Force headed browser (re-authenticate)")
+    browser_group.add_argument("--headless", action="store_true", help="Force headless mode")
+    state_group = parser.add_mutually_exclusive_group()
+    state_group.add_argument("--on", action="store_true", help="Turn lamp ON (no-op if already on)")
+    state_group.add_argument("--off", action="store_true", help="Turn lamp OFF (no-op if already off)")
     args = parser.parse_args()
 
     if args.login:
@@ -174,10 +200,10 @@ def main():
     elif args.headless:
         headless = True
     else:
-        headless = COOKIES_FILE.exists()
-        print(f"[*] Session {'found' if headless else 'not found'} — running {'headless' if headless else 'headed'}.")
+        headless = False
 
-    run(headless)
+    desired_state = "on" if args.on else "off" if args.off else None
+    run(headless, desired_state)
 
 
 if __name__ == "__main__":
